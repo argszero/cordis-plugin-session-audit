@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 make_fixture.py
 fixture-sessions
+loop-fixture
+make_loop_fixture.py

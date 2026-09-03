@@ -157,6 +157,22 @@ function decodeLine(line: string, lineNo: number): ParsedEvent[] | null {
   }]
 }
 
+/**
+ * Read the delta text of an `assistant/chunk` event across both storage shapes:
+ * a single-event `data.chunk` is the raw `StreamChunk` (`{type:'text-delta',
+ * index, text}`), while a packed row expands to `data.chunk = {block, delta,
+ * text}`. Returns the chunk's text payload, or `''` when there is none
+ * (reasoning/tool-call deltas with an ambiguous shape).
+ */
+function chunkDeltaText(event: ParsedEvent): string {
+  const data = event.data as Record<string, unknown>
+  const chunk = (data['chunk'] ?? {}) as Record<string, unknown>
+  if (typeof chunk['text'] === 'string') return chunk['text']
+  // A single StreamChunk may carry the text directly at `data` level.
+  if (typeof data['text'] === 'string') return data['text']
+  return ''
+}
+
 /** Decode the header line of a session log. */
 function decodeHeader(line: string): { id: string; version: number; seedLength: number } | null {
   let raw: unknown
@@ -385,6 +401,55 @@ export function auditSessionLog(bytes: Buffer, path: string): SessionAudit {
       severity: 'info',
       detail: `turn ${openTurn} opened but never closed — an open tail (crash interruption). ` +
         `The in-tree repair synthesizes closers for this exact case.`,
+    })
+  }
+
+  // Degenerate-stream detection: a run of N identical consecutive `assistant/chunk`
+  // delta texts within one stream. This is the signature of a decode loop — the
+  // model emits the same short token(s) repeatedly (mattafaak observed `'\n'` x701,
+  // `'"'` x700, … in a runaway child) with no tool call between them to trip a
+  // tool-call repeat guard. It is cheap and unambiguous at high repeat counts, and
+  // (unlike a wall-clock deadline) also catches a child looping slowly.
+  const CHUNK_REPEAT_THRESHOLD = 20
+  let lastChunkText: string | null = null
+  let chunkRun = 0
+  let worstChunkRun = 0
+  let worstChunkRunAt: number | undefined
+  let worstChunkRunText = ''
+  for (const ev of events) {
+    if (ev.type !== 'assistant/chunk') {
+      // A non-chunk boundary (e.g. an assistant/message or tool/call) resets the
+      // run — a decode loop degenerates *within* a single stream.
+      lastChunkText = null
+      chunkRun = 0
+      continue
+    }
+    const text = chunkDeltaText(ev)
+    if (text === '') {
+      // Skip empty deltas; they are not evidence of repetition.
+      continue
+    }
+    if (text === lastChunkText) {
+      chunkRun += 1
+    } else {
+      chunkRun = 1
+      lastChunkText = text
+    }
+    if (chunkRun > worstChunkRun) {
+      worstChunkRun = chunkRun
+      worstChunkRunAt = ev.seq
+      worstChunkRunText = text
+    }
+  }
+  if (worstChunkRun >= CHUNK_REPEAT_THRESHOLD) {
+    result.findings.push({
+      code: 'REPETITIVE_STREAM',
+      severity: 'warn',
+      detail: `${worstChunkRun} consecutive identical chunk(s) near seq ${worstChunkRunAt} — ` +
+        `a degenerate decode loop (repeated ${JSON.stringify(worstChunkRunText.slice(0, 20))}); ` +
+        `a tool-call repeat guard cannot see this because no tool call is made between chunks. ` +
+        `Nothing bounds the turn length in the harness itself.`,
+      at: worstChunkRunAt,
     })
   }
 

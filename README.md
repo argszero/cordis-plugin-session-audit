@@ -25,6 +25,7 @@ Upstream, the session-log corruption family has produced 14+ distinct bug report
 | `TOOL_CALL_NO_ID` / `TOOL_RESULT_NO_ID` | warn | tool/call or tool/result carries no usable call identity |
 | `ORPHAN_TOOL_CALL` | info | A tool was requested (`tool/call`) but its outcome was never durably recorded (`tool/result`) |
 | `OPEN_TURN` | info | A turn opened but never closed (crash interruption; the in-tree repair synthesizes closers for this) |
+| `REPETITIVE_STREAM` | warn | A run of many identical consecutive `assistant/chunk` deltas within one stream — the signature of a **degenerate decode loop** (the model emits the same short token(s) repeatedly with no tool call between them, e.g. `'\n'` × 701). No tool-call repeat guard can see this because no tool call is made; the harness itself places no turn-length bound. |
 
 ## Usage
 
