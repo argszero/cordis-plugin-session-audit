@@ -1,0 +1,73 @@
+{
+  "name": "@argszero/cordis-plugin-session-audit",
+  "description": "Proactive session-log completeness audit for the dsh harness: detects seq gaps, index-reuse, format-version drift, unknown-required types, orphan tool calls, and open-turn tails — before replay crashes.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./audit": {
+      "types": "./lib/audit.d.ts",
+      "default": "./lib/audit.js"
+    }
+  },
+  "bin": {
+    "session-audit": "bin/session-audit.mjs"
+  },
+  "files": [
+    "lib",
+    "bin",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0 <5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-persistence": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "prepack": "tsc -p ."
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "keywords": [
+    "deepseek",
+    "dsh",
+    "cordis",
+    "plugin",
+    "session-log",
+    "audit",
+    "corruption"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/argszero/cordis-plugin-session-audit.git"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0 <5",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@types/node": "^22.20.1"
+  }
+}
