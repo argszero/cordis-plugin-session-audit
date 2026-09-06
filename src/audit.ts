@@ -69,7 +69,8 @@ const SESSION_FORMAT_VERSION = 0
 /** Known session event types (the build understands this vocabulary). */
 const KNOWN_TYPES = new Set([
   'agent-preset/selected', 'agent/inbox/spliced', 'approval/asked',
-  'approval/decided', 'approval/policy', 'assistant/chunk', 'assistant/message',
+  'approval/decided', 'approval/policy', 'assistant/attempt', 'assistant/chunk',
+  'assistant/message',
   'command/done', 'command/run', 'compaction/end', 'compaction/prune',
   'compaction/start', 'compaction/summary', 'feedback/record', 'goal/change',
   'hook/invoked', 'hook/result', 'llm/retry', 'llm/retry-started',
@@ -317,7 +318,13 @@ export function auditSessionLog(bytes: Buffer, path: string): SessionAudit {
     })
   }
 
-  // Unknown-type events (not marked ignorable) → the storage read path would refuse.
+  // Unknown-type events (not marked ignorable) → the storage read path REFUSES
+  // the whole log (validateStoredEvents throws SessionFormatUnsupportedError),
+  // so this is a hard-fail finding, not a soft warning. The plugin author
+  // surfaced this via #5769: a third-party plugin can append a custom event
+  // type (write succeeds silently) but the log is then rejected on reload.
+  // We report it as `error` + needsManual so the audit correctly predicts the
+  // actual replay outcome, and call out that the writer MUST mark it ignorable.
   const unknownRequired: number[] = []
   for (const ev of events) {
     if (!KNOWN_TYPES.has(ev.type) && ev.ignorable !== true) {
@@ -327,11 +334,16 @@ export function auditSessionLog(bytes: Buffer, path: string): SessionAudit {
   if (unknownRequired.length > 0) {
     result.findings.push({
       code: 'UNKNOWN_REQUIRED_TYPE',
-      severity: 'warn',
+      severity: 'error',
       detail: `${unknownRequired.length} event(s) have a type outside the known vocabulary and are not marked ` +
         `ignorable (seq ${unknownRequired.slice(0, 5).join(', ')}${unknownRequired.length > 5 ? ', …' : ''}); ` +
-        `a newer-harness reader may refuse this log`,
+        `the harness read path refuses a log containing an unmarked unknown type (SessionFormatUnsupportedError), ` +
+        `so a reload of this session will HARD-FAIL. A plugin that wrote such an event must mark it ` +
+        `ignorable (or the log must be repaired), or the session becomes unrecoverable. ` +
+        `This is the #5769 failure mode.`,
+      at: unknownRequired[0],
     })
+    result.needsManual = true
   }
 
   // Scan ALL events for tool/call ↔ tool/result pairing (orphan detection also

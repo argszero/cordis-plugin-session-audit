@@ -21,7 +21,7 @@ Upstream, the session-log corruption family has produced 14+ distinct bug report
 | `SEQ_GAP` | error | Events are missing between seqs (contiguity break) |
 | `SEQ_DUPLICATE` | warn | Same seq appears twice (index reuse) |
 | `SEQ_REORDERED` | warn | An event appears below the contiguous watermark (out-of-order / reused seq) |
-| `UNKNOWN_REQUIRED_TYPE` | warn | A type outside the known vocabulary and not marked `ignorable` (a newer-harness reader may refuse) |
+| `UNKNOWN_REQUIRED_TYPE` | error | A type outside the known vocabulary and not marked `ignorable`. The harness read path **refuses** a log containing an unmarked unknown type (`SessionFormatUnsupportedError`), so a reload of this session will **hard-fail** — this is the [#5769](https://github.com/deepseek-ai/deepseek-harness/discussions/5769) failure mode (a plugin wrote a custom event type that the log then rejects). Fix: mark the event `ignorable`, or the session may be unrecoverable. |
 | `TOOL_CALL_NO_ID` / `TOOL_RESULT_NO_ID` | warn | tool/call or tool/result carries no usable call identity |
 | `ORPHAN_TOOL_CALL` | info | A tool was requested (`tool/call`) but its outcome was never durably recorded (`tool/result`) |
 | `OPEN_TURN` | info | A turn opened but never closed (crash interruption; the in-tree repair synthesizes closers for this) |
