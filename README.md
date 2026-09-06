@@ -25,6 +25,7 @@ Upstream, the session-log corruption family has produced 14+ distinct bug report
 | `TOOL_CALL_NO_ID` / `TOOL_RESULT_NO_ID` | warn | tool/call or tool/result carries no usable call identity |
 | `ORPHAN_TOOL_CALL` | info | A tool was requested (`tool/call`) but its outcome was never durably recorded (`tool/result`) |
 | `OPEN_TURN` | info | A turn opened but never closed (crash interruption; the in-tree repair synthesizes closers for this) |
+| `EMPTY_TEXT_BLOCK` | warn | A persisted `assistant/message` carries an empty/whitespace-only `{type:'text', text:''}` content block. Harmless under lenient models (GLM/Gemini), but a strict provider (Claude) **refuses** it and the session becomes permanently unusable after a model switch ([#5773](https://github.com/deepseek-ai/deepseek-harness/discussions/5773)). Strip these blocks before replaying at a new provider. |
 | `REPETITIVE_STREAM` | warn | A run of many identical consecutive `assistant/chunk` deltas within one stream — the signature of a **degenerate decode loop** (the model emits the same short token(s) repeatedly with no tool call between them, e.g. `'\n'` × 701). No tool-call repeat guard can see this because no tool call is made; the harness itself places no turn-length bound. |
 
 ## Usage

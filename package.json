@@ -1,7 +1,7 @@
 {
   "name": "@argszero/cordis-plugin-session-audit",
-  "description": "Proactive session-log completeness audit for the dsh harness: detects seq gaps, index-reuse, format-version drift, unknown-required types (hard-fail on reload), orphan tool calls, and open-turn tails — before replay crashes.",
-  "version": "0.1.2",
+  "description": "Proactive session-log completeness audit for the dsh harness: detects seq gaps, index-reuse, format-version drift, unknown-required types (hard-fail on reload), empty text blocks (#5773), orphan tool calls, and open-turn tails — before replay crashes.",
+  "version": "0.1.3",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

@@ -346,6 +346,42 @@ export function auditSessionLog(bytes: Buffer, path: string): SessionAudit {
     result.needsManual = true
   }
 
+  // Empty/whitespace-only text blocks in persisted `assistant/message` content.
+  // A provider that emits a trailing `text("")` (e.g. google-antigravity's
+  // `reasoning + tool-call + text("")` shape) stores the empty block verbatim;
+  // the next session that switches to a strict provider (Anthropic/Claude)
+  // then 400s on every turn — permanently, because the poison is the stored
+  // history and compaction can't recover it either (#5773). This is a
+  // provider-independent pre-flight check: flag any `assistant/message` whose
+  // content carries a `{type:'text', text:''}` or whitespace-only block, so the
+  // user can strip them (the documented repair) before switching models.
+  const emptyTextAt: number[] = []
+  for (const ev of events) {
+    if (ev.type !== 'assistant/message') continue
+    const d = ev.data as Record<string, unknown>
+    const msg = d['message'] as Record<string, unknown> | undefined
+    const content = (msg?.['content'] ?? []) as unknown[]
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      const b = (block ?? {}) as Record<string, unknown>
+      if (b['type'] === 'text' && typeof b['text'] === 'string' && (b['text'] as string).trim() === '') {
+        emptyTextAt.push(ev.seq)
+        break
+      }
+    }
+  }
+  if (emptyTextAt.length > 0) {
+    result.findings.push({
+      code: 'EMPTY_TEXT_BLOCK',
+      severity: 'warn',
+      detail: `${emptyTextAt.length} assistant/message event(s) carry an empty/whitespace-only text content block ` +
+        `(seq ${emptyTextAt.slice(0, 5).join(', ')}${emptyTextAt.length > 5 ? ', …' : ''}); a strict provider ` +
+        `(e.g. Claude) refusals these and the session becomes permanently unusable after a model switch (#5773). ` +
+        `Strip the empty blocks from these messages before replaying at a new provider.`,
+      at: emptyTextAt[0],
+    })
+  }
+
   // Scan ALL events for tool/call ↔ tool/result pairing (orphan detection also
   // runs over a log that lost events, so a requested-but-uncompleted call is a
   // first-class finding independent of the surface-eligible set).
