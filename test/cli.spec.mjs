@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { encodeSegment, projectKey } from '../lib/paths.js'
 
 const run = promisify(execFile)
 const here = dirname(fileURLToPath(import.meta.url))
@@ -28,7 +29,10 @@ const FRAME_OPTIONS = { params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 } }
 
 const frame = text => zlib.zstdCompressSync(Buffer.from(text, 'utf8'), FRAME_OPTIONS)
 const evt = (type, seq, data) => `${JSON.stringify({ type, seq, time: 1000 + seq, data })}\n`
-const header = id => `${JSON.stringify({ type: 'session', id, version: 0, seedLength: 0 })}\n`
+const CWD = '/tmp/project-a'
+const header = id => `${JSON.stringify({
+  type: 'session', id, version: 0, seedLength: 0, cwd: CWD,
+})}\n`
 
 /** Invoke the CLI and capture its exit code rather than throwing. */
 async function cliExit(args) {
@@ -43,10 +47,10 @@ async function cliExit(args) {
 test('the CLI finds, reports and gates on a real sessions tree', async () => {
   const root = await mkdtemp(join(tmpdir(), 'session-audit-e2e-'))
   try {
-    const project = join(root, 'project-a')
+    const project = join(root, projectKey(CWD))
 
-    // 1. A healthy compressed session.
-    const healthy = join(project, 'session-healthy')
+    // 1. A healthy compressed session, in the directory its header names.
+    const healthy = join(project, encodeSegment('healthy-1'))
     await mkdir(healthy, { recursive: true })
     await writeFile(join(healthy, 'session.jsonl.zstd'), Buffer.concat([
       frame(header('healthy-1')),
@@ -55,19 +59,23 @@ test('the CLI finds, reports and gates on a real sessions tree', async () => {
     ]))
 
     // 2. The #7161 artifact: a session log a file-recovery tool wrote as all-null.
-    const broken = join(project, 'session-broken')
+    const broken = join(project, encodeSegment('broken-1'))
     await mkdir(broken, { recursive: true })
     await writeFile(join(broken, 'session.jsonl.zstd'), Buffer.alloc(2048, 0))
 
     const result = await cliExit([root])
 
     assert.ok(
-      result.stdout.includes('session-healthy'),
+      result.stdout.includes(encodeSegment('healthy-1')),
       'the compressed healthy session must be found by the walk',
     )
     assert.ok(
-      result.stdout.includes('session-broken'),
+      result.stdout.includes(encodeSegment('broken-1')),
       'the compressed broken session must be found by the walk',
+    )
+    assert.ok(
+      !result.stdout.includes('PATH_MISMATCH'),
+      'a tree in the canonical layout must raise no path finding',
     )
     assert.match(result.stdout, /UNREADABLE_ARTIFACT/)
     assert.match(result.stdout, /invalid frame magic at byte 0/)
@@ -88,9 +96,9 @@ test('the CLI finds, reports and gates on a real sessions tree', async () => {
 test('the CLI --id filter narrows to the artifact that matters', async () => {
   const root = await mkdtemp(join(tmpdir(), 'session-audit-id-'))
   try {
-    const project = join(root, 'project-a')
+    const project = join(root, projectKey(CWD))
     for (const id of ['alpha', 'beta']) {
-      const dir = join(project, `session-${id}`)
+      const dir = join(project, encodeSegment(`${id}-1`))
       await mkdir(dir, { recursive: true })
       await writeFile(join(dir, 'session.jsonl.zstd'), Buffer.concat([
         frame(header(`${id}-1`)),
@@ -101,6 +109,29 @@ test('the CLI --id filter narrows to the artifact that matters', async () => {
     const result = await cliExit([root, '--id', 'beta'])
     assert.ok(result.stdout.includes('beta-1'))
     assert.ok(!result.stdout.includes('alpha-1'), 'the filter must exclude the other session')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('the CLI reports the renamed-directory case (matrix row 4)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'session-audit-row4-'))
+  try {
+    const project = join(root, projectKey(CWD))
+    // A session directory renamed by hand: the header still names the original.
+    const renamed = join(project, 'session-moved-by-hand')
+    await mkdir(renamed, { recursive: true })
+    await writeFile(join(renamed, 'session.jsonl.zstd'), Buffer.concat([
+      frame(header('moved-1')),
+      frame(evt('turn/start', 0, { turn: 1 })),
+    ]))
+
+    const result = await cliExit([root])
+    assert.match(result.stdout, /SESSION_PATH_MISMATCH/)
+    assert.match(result.stdout, /session-moved-by-hand/)
+    assert.match(result.stdout, /moved-1/)
+    assert.match(result.stdout, /needs-manual: 1/)
+    assert.equal(result.code, 1, 'a path mismatch aborts a boot and must gate the launch')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

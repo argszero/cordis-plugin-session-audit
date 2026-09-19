@@ -53,6 +53,8 @@ export interface SessionAudit {
     frameCount?: number;
     /** Bytes belonging to an incomplete final frame (a crash tail), when present. */
     tornBytes?: number;
+    /** The cwd the headerrecords, when it records one. */
+    sessionCwd?: string;
 }
 /**
  * Audit one stored session log (plaintext `.jsonl` bytes).

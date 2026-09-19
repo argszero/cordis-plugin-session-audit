@@ -28,6 +28,9 @@
 import {
   ZstdStructureError, decodeZstdArtifact, looksLikeZstd,
 } from './zstd.js'
+import {
+  encodeSegment, expectedProjectDirName, grandparentName, parentName, pathSegments,
+} from './paths.js'
 
 /** One parsed event line, normalized from a stored record. */
 interface ParsedEvent {
@@ -71,6 +74,8 @@ export interface SessionAudit {
   frameCount?: number
   /** Bytes belonging to an incomplete final frame (a crash tail), when present. */
   tornBytes?: number
+  /** The cwd the headerrecords, when it records one. */
+  sessionCwd?: string
 }
 
 /** The harness's current on-disk session format version. */
@@ -185,7 +190,7 @@ function chunkDeltaText(event: ParsedEvent): string {
 }
 
 /** Decode the header line of a session log. */
-function decodeHeader(line: string): { id: string; version: number; seedLength: number } | null {
+function decodeHeader(line: string): { id: string; version: number; seedLength: number; cwd?: string } | null {
   let raw: unknown
   try {
     raw = JSON.parse(line)
@@ -198,10 +203,12 @@ function decodeHeader(line: string): { id: string; version: number; seedLength: 
   const id = rec['id']
   const version = rec['version']
   if (typeof id !== 'string' || !Number.isSafeInteger(version as number)) return null
+  const cwd = rec['cwd']
   return {
     id,
     version: version as number,
     seedLength: (rec['seedLength'] as number | undefined) ?? 0,
+    ...(typeof cwd === 'string' ? { cwd } : {}),
   }
 }
 
@@ -226,6 +233,7 @@ export function auditSessionLog(bytes: Buffer, path: string): SessionAudit {
     byteLength: bytes.length,
     findings: [],
     needsManual: false,
+    ...(header?.cwd === undefined ? {} : { sessionCwd: header.cwd }),
   }
 
   if (!header) {
@@ -511,7 +519,90 @@ export function auditSessionLog(bytes: Buffer, path: string): SessionAudit {
     })
   }
 
+  checkPathIdentity(result)
   return result
+}
+
+/**
+ * Compare an artifact's location against the location its header identifies.
+ *
+ * When these disagree the backend refuses the read:
+ *
+ *     corrupt session log "<path>": header id "<id>" and cwd identify "<expected>"
+ *
+ * and that refusal aborts the artifact listing — and with it the application
+ * boot (#7161, matrix row 4: a session directory that was renamed or moved by
+ * hand). Two independent comparisons are made:
+ *
+ * - the **session directory** must be `encodeSegment(header.id)`. That encoding
+ *   is lossless and invertible (`packages/session/session-persistence-jsonl/src/
+ *   format.ts`), so a disagreement here is definite;
+ * - the **project directory** must be `projectKey(header.cwd)`. The backend's
+ *   project naming is deliberately lossy (separator runs collapse, names are
+ *   truncated to fit a filesystem component), so a disagreement is reported as
+ *   a warning: it usually means the layout predates a naming revision, not that
+ *   the read is refused.
+ *
+ * The backend treats a difference as acceptable when both names resolve to one
+ * file (a symlink or a hard link, `sameFile`). A path string cannot express
+ * that, so a finding here is *evidence*, not a verdict — it is stated that way.
+ *
+ * A path shallower than `<root>/<project>/<session>/<file>` carries no project
+ * or session directory to compare, so no comparison is attempted: an artifact
+ * dropped directly in the sessions root is reported by its own findings alone.
+ *
+ * @param audit - the audit to annotate; it must already carry the decoded header.
+ */
+function checkPathIdentity(audit: SessionAudit): void {
+  const segments = pathSegments(audit.path)
+  if (segments.length < 3) return // no project/session directory to compare against
+  if (audit.formatVersion < 0) return // no readable header: nothing to compare against
+
+  const id = audit.sessionId
+  const expectedDir = safeEncodeSegment(id)
+  if (expectedDir !== undefined) {
+    const actualDir = parentName(audit.path)
+    if (actualDir !== undefined && actualDir !== expectedDir) {
+      audit.findings.push({
+        code: 'SESSION_PATH_MISMATCH',
+        severity: 'error',
+        detail: `the artifact sits in directory "${actualDir}", but its header id "${id}" identifies `
+          + `"${expectedDir}". The backend re-derives the path from the header and refuses this read `
+          + '("header id … and cwd identify …"), which aborts the artifact listing and the '
+          + 'application boot. The comparison is a path shape only: if both names resolve to one '
+          + 'file (a symlink or a hard link) the backend accepts the artifact and this finding is '
+          + 'advisory. Otherwise move the file back to its identified directory.',
+      })
+      audit.needsManual = true
+    }
+  }
+
+  // A header with no cwd is not "unknown": the backend treats an absent cwd as
+  // the `_no-cwd` bucket, so the comparison stays available.
+  const expectedProject = expectedProjectDirName(audit.sessionCwd)
+  if (expectedProject !== undefined) {
+    const actualProject = grandparentName(audit.path)
+    if (actualProject !== undefined && actualProject !== expectedProject) {
+      const recorded = audit.sessionCwd === undefined ? '(no cwd recorded)' : `"${audit.sessionCwd}"`
+      audit.findings.push({
+        code: 'PROJECT_PATH_MISMATCH',
+        severity: 'warn',
+        detail: `the artifact sits under project directory "${actualProject}", but its recorded cwd `
+          + `${recorded} derives "${expectedProject}". Project naming is lossy and `
+          + 'revision-dependent, so this is advisory — check it only if a read of this session is '
+          + 'refused.',
+      })
+    }
+  }
+}
+
+/** Encode a session id, or `undefined` when it cannot name a directory. */
+function safeEncodeSegment(id: string): string | undefined {
+  try {
+    return encodeSegment(id)
+  } catch {
+    return undefined // an id with no derivable name is reported as a header problem already
+  }
 }
 
 /**

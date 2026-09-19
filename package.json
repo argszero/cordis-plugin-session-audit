@@ -1,7 +1,7 @@
 {
   "name": "@argszero/cordis-plugin-session-audit",
-  "description": "Proactive session-log completeness audit for the dsh harness: audit both the plaintext .jsonl and the .jsonl.zstd concatenated-frame container for seq gaps, index-reuse, format-version drift, unknown-required types (hard-fail on reload), empty text blocks (#5773), orphan tool calls, open-turn tails, torn crash tails, and the container defects that abort an application boot.",
-  "version": "0.1.4",
+  "description": "Proactive session-log completeness audit for the dsh harness: audit both the plaintext .jsonl and the .jsonl.zstd concatenated-frame container for seq gaps, index-reuse, format-version drift, unknown-required types (hard-fail on reload), empty text blocks (#5773), orphan tool calls, open-turn tails, torn crash tails, the container defects that abort an application boot, and artifacts that no longer sit where their own header says they do.",
+  "version": "0.1.5",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
