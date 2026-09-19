@@ -25,6 +25,10 @@
  * @module @argszero/cordis-plugin-session-audit/audit
  */
 
+import {
+  ZstdStructureError, decodeZstdArtifact, looksLikeZstd,
+} from './zstd.js'
+
 /** One parsed event line, normalized from a stored record. */
 interface ParsedEvent {
   type: string
@@ -61,6 +65,12 @@ export interface SessionAudit {
   findings: AuditFinding[]
   /** True when the log has structural damage that a replay would fail on. */
   needsManual: boolean
+  /** The on-disk container this artifact used. */
+  container?: 'plaintext' | 'zstd'
+  /** Complete Zstandard frames, when the artifact is a compressed container. */
+  frameCount?: number
+  /** Bytes belonging to an incomplete final frame (a crash tail), when present. */
+  tornBytes?: number
 }
 
 /** The harness's current on-disk session format version. */
@@ -504,12 +514,109 @@ export function auditSessionLog(bytes: Buffer, path: string): SessionAudit {
   return result
 }
 
+/**
+ * Audit one stored session artifact, transparently handling both containers.
+ *
+ * A plaintext artifact takes the same path as {@link auditSessionLog}. A
+ * Zstandard artifact — the harness's default when compression is enabled — is
+ * first classified structurally, because a container defect and a content
+ * defect have different consequences: a structural defect aborts the harness's
+ * artifact listing and therefore the whole application boot
+ * ([#7161](https://github.com/deepseek-ai/deepseek-harness/discussions/7161)),
+ * while an incomplete final frame is a crash tail the harness recovers.
+ *
+ * @param bytes - the raw file contents.
+ * @param path - the artifact path, for the report.
+ * @returns a {@link SessionAudit}; never throws for a damaged artifact — damage
+ *   is the thing being reported.
+ */
+export function auditSessionArtifact(bytes: Buffer, path: string): SessionAudit {
+  // An empty artifact is skipped by the harness rather than refused
+  // (discussion #7161, matrix row 6), in both containers, so it must not be
+  // reported as corruption.
+  if (bytes.length === 0) {
+    return {
+      sessionId: '(empty artifact)',
+      path,
+      formatVersion: -1,
+      inheritedEventCount: 0,
+      eventCount: 0,
+      byteLength: 0,
+      findings: [{
+        code: 'EMPTY_ARTIFACT',
+        severity: 'info',
+        detail: 'the artifact is empty — the harness skips it while listing, so it is not corruption',
+      }],
+      needsManual: false,
+    }
+  }
+
+  // The container is chosen by the artifact name, not by sniffing content: that
+  // is what the harness does (it is configured for one compression mode), and
+  // it is what makes a `.jsonl.zstd` artifact whose bytes are not Zstandard —
+  // an all-null file from a failed file-recovery run (#7161, matrix row 2) —
+  // report as the structural defect it is, rather than being audited as
+  // plaintext and blamed for a missing header.
+  const zstdNamed = path.endsWith('.jsonl.zstd')
+  if (!zstdNamed && !looksLikeZstd(bytes)) return auditSessionLog(bytes, path)
+
+  let decoded
+  try {
+    decoded = decodeZstdArtifact(bytes)
+  } catch (error: unknown) {
+    const structural = error instanceof ZstdStructureError
+    return {
+      sessionId: '(unreadable container)',
+      path,
+      formatVersion: -1,
+      inheritedEventCount: 0,
+      eventCount: 0,
+      byteLength: bytes.length,
+      container: 'zstd',
+      needsManual: true,
+      findings: [{
+        code: structural ? 'UNREADABLE_ARTIFACT' : 'UNDECODABLE_FRAME',
+        severity: 'error',
+        detail: structural
+          ? `${(error as Error).message} — the artifact listing aborts on this file, which `
+            + 'takes the whole application boot down with it. The session cannot be opened; '
+            + 'move the file out of the sessions root (or restore it) to boot again.'
+          : `${(error as Error).message} — the container structure is intact, so the frames can `
+            + 'be located, but their content could not be decoded.',
+        at: structural ? (error as ZstdStructureError).offset : 0,
+      }],
+    }
+  }
+
+  const result = auditSessionLog(Buffer.from(decoded.text, 'utf8'), path)
+  result.container = 'zstd'
+  result.frameCount = decoded.frameCount
+  result.byteLength = bytes.length
+  if (decoded.tornBytes > 0) {
+    result.tornBytes = decoded.tornBytes
+    result.findings.unshift({
+      code: 'TORN_FINAL_FRAME',
+      severity: 'info',
+      detail: `the final Zstandard frame is incomplete (${decoded.tornBytes} trailing byte(s)) — `
+        + 'a crash tail. The harness tolerates this while listing and recovers what it can; '
+        + 'it is not the class that aborts a boot. The tail is not treated as durable content '
+        + `here: ${decoded.tornText === undefined ? 'its plaintext could not be recovered' : `${decoded.tornText.length} byte(s) of plaintext were recoverable`}, `
+        + `and the findings above cover the ${decoded.frameCount} complete frame(s) only.`,
+      at: decoded.frameCount,
+    })
+  }
+  return result
+}
+
 /** Format a session audit as human-readable text. */
 export function formatAudit(audit: SessionAudit): string {
   const lines: string[] = []
   lines.push(`Session ${audit.sessionId} — ${audit.path}`)
+  const container = audit.container === 'zstd'
+    ? `zstd${audit.frameCount === undefined ? '' : ` · ${audit.frameCount} frame(s)`}`
+    : audit.container ?? 'plaintext'
   lines.push(`  format v${audit.formatVersion} · ${audit.eventCount} events · ${audit.byteLength} bytes · ` +
-    `seed length ${audit.inheritedEventCount}`)
+    `seed length ${audit.inheritedEventCount} · ${container}`)
   if (audit.findings.length === 0) {
     lines.push('  OK — no corruption findings.')
     return lines.join('\n')

@@ -47,6 +47,12 @@ export interface SessionAudit {
     findings: AuditFinding[];
     /** True when the log has structural damage that a replay would fail on. */
     needsManual: boolean;
+    /** The on-disk container this artifact used. */
+    container?: 'plaintext' | 'zstd';
+    /** Complete Zstandard frames, when the artifact is a compressed container. */
+    frameCount?: number;
+    /** Bytes belonging to an incomplete final frame (a crash tail), when present. */
+    tornBytes?: number;
 }
 /**
  * Audit one stored session log (plaintext `.jsonl` bytes).
@@ -55,5 +61,22 @@ export interface SessionAudit {
  * @returns a {@link SessionAudit}.
  */
 export declare function auditSessionLog(bytes: Buffer, path: string): SessionAudit;
+/**
+ * Audit one stored session artifact, transparently handling both containers.
+ *
+ * A plaintext artifact takes the same path as {@link auditSessionLog}. A
+ * Zstandard artifact — the harness's default when compression is enabled — is
+ * first classified structurally, because a container defect and a content
+ * defect have different consequences: a structural defect aborts the harness's
+ * artifact listing and therefore the whole application boot
+ * ([#7161](https://github.com/deepseek-ai/deepseek-harness/discussions/7161)),
+ * while an incomplete final frame is a crash tail the harness recovers.
+ *
+ * @param bytes - the raw file contents.
+ * @param path - the artifact path, for the report.
+ * @returns a {@link SessionAudit}; never throws for a damaged artifact — damage
+ *   is the thing being reported.
+ */
+export declare function auditSessionArtifact(bytes: Buffer, path: string): SessionAudit;
 /** Format a session audit as human-readable text. */
 export declare function formatAudit(audit: SessionAudit): string;

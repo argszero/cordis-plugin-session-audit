@@ -2,11 +2,17 @@
 /**
  * One-shot session-log audit CLI.
  *
- * Walks a dsh JSONL sessions root and audits every plaintext `.jsonl` session
- * log for the full corruption surface (seq gaps, index-reuse, duplicates,
- * out-of-order seqs, format-version drift, unknown-required types, orphan
- * tool calls, open-turn tails). Prints a diagnostic report per session and a
- * summary. Never mutates a log.
+ * Walks a dsh sessions root and audits every stored session artifact — both
+ * `.jsonl` and the `.jsonl.zstd` concatenated-frame container the harness
+ * writes when compression is enabled — for the full corruption surface (seq
+ * gaps, index-reuse, duplicates, out-of-order seqs, format-version drift,
+ * unknown-required types, orphan tool calls, open-turn tails, torn tails, and
+ * the container defects that abort a boot).
+ *
+ * Prints a diagnostic report per session and a summary. Never mutates a log.
+ *
+ * Exit code is 1 when any artifact needs manual attention, so this can be used
+ * as a pre-boot gate; 0 when every artifact is interpretable.
  *
  * Usage:
  *   node session-audit.mjs <sessions-root>
@@ -20,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const { auditSessionLog, formatAudit } = await import(new URL('../lib/audit.js', import.meta.url).href)
+const { auditSessionArtifact, formatAudit } = await import(new URL('../lib/audit.js', import.meta.url).href)
 
 // --- argument parsing ---
 const args = process.argv.slice(2)
@@ -36,6 +42,9 @@ if (!root) {
   console.error('Usage: node session-audit.mjs <sessions-root> [--id <substring>]')
   process.exit(2)
 }
+
+/** The stored session artifact suffixes the harness writes. */
+const ARTIFACT_SUFFIXES = ['.jsonl', '.jsonl.zstd']
 
 async function walkSessionLogs(rootDir) {
   const absoluteRoot = isAbsolute(rootDir) ? rootDir : resolve(rootDir)
@@ -56,7 +65,7 @@ async function walkSessionLogs(rootDir) {
       let files
       try { files = await readdir(sessionDir) } catch { continue }
       for (const file of files) {
-        if (file.endsWith('.jsonl')) found.push(join(sessionDir, file))
+        if (ARTIFACT_SUFFIXES.some(suffix => file.endsWith(suffix))) found.push(join(sessionDir, file))
       }
     }
   }
@@ -70,12 +79,13 @@ let errorCount = 0, warnCount = 0, needsManual = 0, okCount = 0
 for (const p of paths) {
   if (idFilter && !p.includes(idFilter)) continue
   let bytes
-  try { bytes = await readFile(p) } catch {
-    reports.push(`\n${p}\n  [warn] UNREADABLE — could not read (possibly .jsonl.zstd compressed)`)
-    warnCount++
+  try { bytes = await readFile(p) } catch (e) {
+    reports.push(`\n${p}\n  [error] UNREADABLE_ARTIFACT — could not read the file: ${e.message}`)
+    errorCount++
+    needsManual++
     continue
   }
-  const audit = auditSessionLog(bytes, p)
+  const audit = auditSessionArtifact(bytes, p)
   reports.push('\n' + formatAudit(audit))
   for (const f of audit.findings) {
     if (f.severity === 'error') errorCount++
@@ -89,3 +99,7 @@ console.log(reports.join('\n'))
 console.log(`\n=== summary ===`)
 console.log(`  sessions scanned: ${paths.filter(p => !idFilter || p.includes(idFilter)).length}`)
 console.log(`  clean: ${okCount} · needs-manual: ${needsManual} · error findings: ${errorCount} · warn findings: ${warnCount}`)
+if (needsManual > 0) {
+  console.log(`\n  ⚠ ${needsManual} artifact(s) would abort a boot or lose history — resolve these before launching dsh.`)
+  process.exit(1)
+}

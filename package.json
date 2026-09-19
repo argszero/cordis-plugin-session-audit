@@ -1,7 +1,7 @@
 {
   "name": "@argszero/cordis-plugin-session-audit",
-  "description": "Proactive session-log completeness audit for the dsh harness: detects seq gaps, index-reuse, format-version drift, unknown-required types (hard-fail on reload), empty text blocks (#5773), orphan tool calls, and open-turn tails — before replay crashes.",
-  "version": "0.1.3",
+  "description": "Proactive session-log completeness audit for the dsh harness: audit both the plaintext .jsonl and the .jsonl.zstd concatenated-frame container for seq gaps, index-reuse, format-version drift, unknown-required types (hard-fail on reload), empty text blocks (#5773), orphan tool calls, open-turn tails, torn crash tails, and the container defects that abort an application boot.",
+  "version": "0.1.4",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -41,7 +41,9 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "prepack": "tsc -p ."
+    "pretest": "tsc -p .",
+    "prepack": "tsc -p .",
+    "test": "node --test \"test/*.spec.mjs\""
   },
   "engines": {
     "node": "^22.19 || >=24"
@@ -65,9 +67,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0 <5",
+    "@types/node": "^22.20.1",
     "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "@types/node": "^22.20.1"
   }
 }

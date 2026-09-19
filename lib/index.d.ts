@@ -42,4 +42,5 @@ export interface SessionAuditConfig {
 }
 /** Register the `/session-audit` command for every composed command adapter. */
 export declare function apply(ctx: Context): void;
-export { auditSessionLog, formatAudit } from './audit.js';
+export { auditSessionArtifact, auditSessionLog, formatAudit } from './audit.js';
+export { scanZstdFrames, ZstdStructureError, zstdDecodeSupported } from './zstd.js';

@@ -26,6 +26,10 @@ Upstream, the session-log corruption family has produced 14+ distinct bug report
 | `ORPHAN_TOOL_CALL` | info | A tool was requested (`tool/call`) but its outcome was never durably recorded (`tool/result`) |
 | `OPEN_TURN` | info | A turn opened but never closed (crash interruption; the in-tree repair synthesizes closers for this) |
 | `EMPTY_TEXT_BLOCK` | warn | A persisted `assistant/message` carries an empty/whitespace-only `{type:'text', text:''}` content block. Harmless under lenient models (GLM/Gemini), but a strict provider (Claude) **refuses** it and the session becomes permanently unusable after a model switch ([#5773](https://github.com/deepseek-ai/deepseek-harness/discussions/5773)). Strip these blocks before replaying at a new provider. |
+| `UNREADABLE_ARTIFACT` | error | The artifact is a Zstandard container whose **structure** is broken — a bad frame magic, a reserved frame-header bit, a reserved block type. This is the class that takes the whole application down: the harness's artifact listing aborts on it, so `dsh` cannot boot at all until the file is moved out of the sessions root ([#7161](https://github.com/deepseek-ai/deepseek-harness/discussions/7161)). The finding names the byte offset, in the harness's own wording. |
+| `UNDECODABLE_FRAME` | error | The container structure is intact, so the frames can be located, but a frame's content failed validation (checksum or entropy decode). The session cannot be read; unlike `UNREADABLE_ARTIFACT` this does not abort a boot, because the failure happens after the listing. |
+| `TORN_FINAL_FRAME` | info | The final Zstandard frame is incomplete — a crash tail from a process killed mid-append. The harness **tolerates** this class while listing and repairs what it can, so it is reported as `info` and never as needs-manual. The tail's plaintext is recovered on a best-effort basis and reported separately; it is never folded into the audited content, which covers the complete frames only. |
+| `EMPTY_ARTIFACT` | info | Zero bytes. The harness skips an empty artifact rather than refusing it, so this is not corruption. |
 | `REPETITIVE_STREAM` | warn | A run of many identical consecutive `assistant/chunk` deltas within one stream — the signature of a **degenerate decode loop** (the model emits the same short token(s) repeatedly with no tool call between them, e.g. `'\n'` × 701). No tool-call repeat guard can see this because no tool call is made; the harness itself places no turn-length bound. |
 
 ## Usage
@@ -40,7 +44,7 @@ Add it to a `cordis.yml` resolution manifest:
       name: '@argszero/cordis-plugin-session-audit'
 ```
 
-Then `/session-audit` audits every `.jsonl` session log under the JSONL root, and `/session-audit id=<substring>` narrows to matching session ids. Configure the root via plugin `config`:
+Then `/session-audit` audits every stored session artifact — `.jsonl` and the compressed `.jsonl.zstd` container — under the JSONL root, and `/session-audit id=<substring>` narrows to matching session ids. Configure the root via plugin `config`:
 
 ```yaml
 - insert:
@@ -65,9 +69,17 @@ npx @argszero/cordis-plugin-session-audit /path/to/sessions --id <substring>
 DSH_HOME=/path/to/home npx @argszero/cordis-plugin-session-audit
 ```
 
+**Exit code.** The CLI exits `1` when any artifact needs manual attention, `0` otherwise — so it can gate a launch:
+
+```sh
+npx @argszero/cordis-plugin-session-audit "$DSH_HOME/sessions" && dsh web
+```
+
 ## Notes
 
-- The audit reads **plaintext `.jsonl`** artifacts. A `.jsonl.zstd` (compressed) artifact is reported as `UNREADABLE` — decompress it first, or point the audit at a root configured with `compression: none`.
+- **Both containers are read.** `.jsonl` and `.jsonl.zstd` are audited alike, so a machine with compression enabled gets the same findings as one without. The container is chosen by artifact name, which is how the harness chooses it — a `.jsonl.zstd` file whose bytes are not Zstandard is reported as the structural defect it is, not as a malformed header.
+- **Per-frame, deliberately.** Node's `zstdDecompressSync` accepts a concatenated container and decodes **only the first frame**, with no error. The harness's container is concatenated frames, one per durable batch, so a one-shot decode silently returns the first batch and drops the rest — which would make a badly truncated session read as clean. This tool scans the frame structure first and decodes each frame, which is also what lets it tell a torn crash tail apart from a structural defect.
+- **Two-phase, so the important verdict survives a weak runtime.** The structural scan is plain `Buffer` arithmetic and needs no `node:zlib`; decompression is the optional second phase. On a Node without `zstdDecompressSync` the audit still reports whether an artifact would abort a boot.
 - **Non-mutating.** This plugin never appends to, truncates, or rewrites a session log.
 - It is a **diagnostic companion**, not a replacement for `repair.ts` or a fix. Use it to understand *what* is wrong, then decide whether the in-tree repair or a manual migration is appropriate.
 

@@ -18,7 +18,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { auditSessionLog, formatAudit, type SessionAudit } from './audit.js'
+import { auditSessionArtifact, formatAudit, type SessionAudit } from './audit.js'
 
 // Minimal structural augmentation so a bare `@deepseek-ai/cordis` context is
 // adequate for the command-registration call shape. A full harness workspace
@@ -56,7 +56,17 @@ export interface SessionAuditConfig {
   root?: string
 }
 
-/** Walk a sessions JSONL root, collecting every plaintext `.jsonl` artifact path. */
+/** The stored session artifact suffixes the harness writes. */
+const ARTIFACT_SUFFIXES = ['.jsonl', '.jsonl.zstd'] as const
+
+/**
+ * Walk a sessions root, collecting every stored session artifact.
+ *
+ * Both containers are collected: the harness writes `.jsonl` or
+ * `.jsonl.zstd` depending on whether compression is enabled, and a machine that
+ * enabled it stores *everything* compressed — where a `.jsonl`-only walk finds
+ * nothing at all to audit.
+ */
 async function walkSessionLogs(root: string): Promise<string[]> {
   const { readdir, realpath } = await import('node:fs/promises')
   const { join, isAbsolute, resolve } = await import('node:path')
@@ -72,7 +82,7 @@ async function walkSessionLogs(root: string): Promise<string[]> {
       const sessionDir = join(projDir, sd.name)
       const files = await readdir(sessionDir).catch(() => [])
       for (const file of files) {
-        if (file.endsWith('.jsonl')) found.push(join(sessionDir, file))
+        if (ARTIFACT_SUFFIXES.some(suffix => file.endsWith(suffix))) found.push(join(sessionDir, file))
       }
     }
   }
@@ -93,20 +103,26 @@ async function executeAuditCommand(invocation: CommandInvocation, ctx: Context):
   const filtered = idFilter !== undefined ? paths.filter(p => p.includes(idFilter)) : paths
   if (filtered.length === 0) {
     return { kind: 'success', text: idFilter !== undefined
-      ? `No .jsonl session log matched "${idFilter}" under ${root}`
-      : `No .jsonl session logs found under ${root}` }
+      ? `No session log matched "${idFilter}" under ${root}`
+      : `No session logs found under ${root}` }
   }
   const audits: SessionAudit[] = []
   const { readFile } = await import('node:fs/promises')
   for (const p of filtered) {
     try {
-      audits.push(auditSessionLog(await readFile(p), p))
-    } catch {
+      audits.push(auditSessionArtifact(await readFile(p), p))
+    } catch (error: unknown) {
+      // Only an I/O failure reaches here: container damage is reported by the
+      // audit itself, so it stays a finding rather than becoming an exception.
       audits.push({
-        sessionId: '(unknown)', path: p, formatVersion: -1, inheritedEventCount: 0,
+        sessionId: '(unreadable)', path: p, formatVersion: -1, inheritedEventCount: 0,
         eventCount: 0, byteLength: 0,
-        findings: [{ code: 'UNREADABLE', severity: 'warn', detail: 'Could not read (possibly .jsonl.zstd compressed); use `session-audit` on the plaintext artifact.' }],
-        needsManual: false,
+        findings: [{
+          code: 'UNREADABLE_ARTIFACT',
+          severity: 'error',
+          detail: `Could not read the file: ${(error as Error).message}`,
+        }],
+        needsManual: true,
       })
     }
   }
@@ -127,4 +143,5 @@ export function apply(ctx: Context): void {
   })
 }
 
-export { auditSessionLog, formatAudit } from './audit.js'
+export { auditSessionArtifact, auditSessionLog, formatAudit } from './audit.js'
+export { scanZstdFrames, ZstdStructureError, zstdDecodeSupported } from './zstd.js'
